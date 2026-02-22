@@ -9,23 +9,25 @@ from datetime import datetime
 
 import requests
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # обязательно для сервера без GUI
 import matplotlib.pyplot as plt
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from flask import Flask, jsonify
 
-# ===== ТОКЕН =====
+# ===== ТВОЙ ТОКЕН =====
 TOKEN = "8403715390:AAEdo8Tbl6Ns70X27CbLGBxjg5S_u3ctwzY"
-# =================
+# ======================
 
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# Страны для проверки
 LOCATIONS = [
     {"country": "RU", "name": "🇷🇺 Россия"},
     {"country": "US", "name": "🇺🇸 США"},
@@ -35,7 +37,7 @@ LOCATIONS = [
     {"country": "AU", "name": "🇦🇺 Австралия"},
 ]
 
-# ---------- Flask с универсальным обработчиком ----------
+# ---------- Flask для health check (всегда отвечает 200) ----------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -46,17 +48,12 @@ def home():
 def health():
     return jsonify({"status": "ok"})
 
-# Универсальный обработчик для любых других путей (включая /kaith*)
+# Ловим любые пути, которые запрашивает платформа (например /kaithhealthcheck)
 @flask_app.route('/<path:path>')
 def catch_all(path):
-    # Просто возвращаем 200, чтобы health check проходил
-    return jsonify({"status": "ok", "checked_path": path}), 200
+    return jsonify({"status": "ok", "path": path}), 200
 
-def run_flask():
-    """Запуск Flask в отдельном потоке"""
-    flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
-
-# ---------- Основные функции бота (без изменений) ----------
+# ---------- Функции бота (без изменений, все рабочие) ----------
 async def check_site_global(domain: str):
     results = []
     for loc in LOCATIONS:
@@ -230,7 +227,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     except Exception as e:
-        logger.exception("Ошибка")
+        logger.exception("Ошибка в check_command")
         await status_msg.edit_text(f"❌ Ошибка при проверке: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,14 +236,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check <домен> — например, /check google.com"
     )
 
+def run_bot():
+    """Запуск Telegram бота в отдельном потоке"""
+    try:
+        app = Application.builder().token(TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("check", check_command))
+        logger.info("Бот запущен и слушает команды...")
+        app.run_polling()
+    except Exception as e:
+        logger.exception("Бот упал с ошибкой, но Flask продолжает работать")
+
 def main():
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("check", check_command))
-    logger.info("Бот запущен...")
-    app.run_polling()
+    # Запускаем бота в фоновом потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+
+    # Запускаем Flask в главном потоке (именно он держит процесс живым)
+    logger.info("Запуск Flask на порту 8080 для health checks")
+    flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     main()
