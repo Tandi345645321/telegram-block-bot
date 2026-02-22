@@ -37,7 +37,7 @@ LOCATIONS = [
     {"country": "AU", "name": "🇦🇺 Австралия"},
 ]
 
-# ---------- Flask для health check (всегда отвечает 200) ----------
+# ---------- Flask для health check (работает в фоне) ----------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -52,6 +52,11 @@ def health():
 @flask_app.route('/<path:path>')
 def catch_all(path):
     return jsonify({"status": "ok", "path": path}), 200
+
+def run_flask():
+    """Запуск Flask в отдельном потоке"""
+    logger.info("Запуск Flask на порту 8080 для health checks")
+    flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
 
 # ---------- Функции бота (без изменений, все рабочие) ----------
 async def check_site_global(domain: str):
@@ -236,25 +241,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check <домен> — например, /check google.com"
     )
 
-def run_bot():
-    """Запуск Telegram бота в отдельном потоке"""
-    try:
-        app = Application.builder().token(TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("check", check_command))
-        logger.info("Бот запущен и слушает команды...")
-        app.run_polling()
-    except Exception as e:
-        logger.exception("Бот упал с ошибкой, но Flask продолжает работать")
-
 def main():
-    # Запускаем бота в фоновом потоке
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Запускаем Flask в фоновом потоке (daemon=True, чтобы поток завершился при выходе)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
-    # Запускаем Flask в главном потоке (именно он держит процесс живым)
-    logger.info("Запуск Flask на порту 8080 для health checks")
-    flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+    # Небольшая пауза, чтобы Flask успел запуститься до первых проверок
+    time.sleep(2)
+
+    # Запускаем бота в главном потоке
+    logger.info("Запуск Telegram бота...")
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("check", check_command))
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
