@@ -9,25 +9,23 @@ from datetime import datetime
 
 import requests
 import matplotlib
-matplotlib.use('Agg')  # для сервера без графики
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from flask import Flask, jsonify
 
-# ===== ТОКЕН (твой) =====
+# ===== ТОКЕН =====
 TOKEN = "8403715390:AAEdo8Tbl6Ns70X27CbLGBxjg5S_u3ctwzY"
-# ========================
+# =================
 
-# Настройка логирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Список стран для проверки
 LOCATIONS = [
     {"country": "RU", "name": "🇷🇺 Россия"},
     {"country": "US", "name": "🇺🇸 США"},
@@ -37,7 +35,7 @@ LOCATIONS = [
     {"country": "AU", "name": "🇦🇺 Австралия"},
 ]
 
-# ---------- Flask для health check ----------
+# ---------- Flask с универсальным обработчиком ----------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -48,15 +46,19 @@ def home():
 def health():
     return jsonify({"status": "ok"})
 
+# Универсальный обработчик для любых других путей (включая /kaith*)
+@flask_app.route('/<path:path>')
+def catch_all(path):
+    # Просто возвращаем 200, чтобы health check проходил
+    return jsonify({"status": "ok", "checked_path": path}), 200
+
 def run_flask():
-    """Запускает Flask в отдельном потоке"""
+    """Запуск Flask в отдельном потоке"""
     flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
 
-# ---------- Основные функции бота ----------
+# ---------- Основные функции бота (без изменений) ----------
 async def check_site_global(domain: str):
-    """Проверяет доступность сайта через Globalping API"""
     results = []
-
     for loc in LOCATIONS:
         payload = {
             "type": "http",
@@ -68,7 +70,6 @@ async def check_site_global(domain: str):
                 "request": {"path": "/", "method": "HEAD"},
             },
         }
-
         try:
             resp = requests.post(
                 "https://api.globalping.io/v1/measurements",
@@ -83,13 +84,9 @@ async def check_site_global(domain: str):
                     "error": f"HTTP {resp.status_code}",
                 })
                 continue
-
             data = resp.json()
             measurement_id = data["id"]
-
-            # Ждём выполнения теста
             time.sleep(3)
-
             result_resp = requests.get(
                 f"https://api.globalping.io/v1/measurements/{measurement_id}",
                 timeout=10,
@@ -102,15 +99,12 @@ async def check_site_global(domain: str):
                     "error": f"HTTP {result_resp.status_code}",
                 })
                 continue
-
             result_data = result_resp.json()
-
             if "results" in result_data and len(result_data["results"]) > 0:
                 probe_result = result_data["results"][0]
                 status = "✅ Доступен" if probe_result.get("status") == "finished" else "❌ Недоступен"
                 timings = probe_result.get("timings", {})
                 response_time = timings.get("total", 0)
-
                 results.append({
                     "country": loc["country"],
                     "status": status,
@@ -124,7 +118,6 @@ async def check_site_global(domain: str):
                     "response_time": 0,
                     "error": "Пустой ответ",
                 })
-
         except Exception as e:
             logger.error(f"Ошибка при проверке {loc['country']}: {e}")
             results.append({
@@ -133,46 +126,35 @@ async def check_site_global(domain: str):
                 "response_time": 0,
                 "error": str(e)[:50],
             })
-
     return results
 
 def create_status_chart(results, domain):
-    """Создаёт график и возвращает буфер с PNG"""
-    # Подготовка данных
     countries = []
     status_colors = []
     response_times = []
-
     country_names = {loc["country"]: loc["name"] for loc in LOCATIONS}
-
     for r in results:
         country = country_names.get(r["country"], r["country"])
         countries.append(country)
-        response_times.append(r["response_time"] / 1000)  # в секунды
+        response_times.append(r["response_time"] / 1000)
         if "✅" in r["status"]:
             status_colors.append("green")
         elif "❌" in r["status"]:
             status_colors.append("red")
         else:
             status_colors.append("orange")
-
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     fig.suptitle(f"Доступность сайта {domain}", fontsize=14)
-
-    # Верхний график: статус
     ax1.bar(countries, [1] * len(countries), color=status_colors, alpha=0.7)
     ax1.set_ylim(0, 1.5)
     ax1.set_ylabel("Статус")
     ax1.set_title("Зелёный — доступен, Красный — недоступен, Оранжевый — ошибка")
     ax1.tick_params(axis="x", rotation=45)
     ax1.set_yticks([])
-
-    # Нижний график: время отклика
     bars = ax2.bar(countries, response_times, color="blue", alpha=0.6)
     ax2.set_ylabel("Время отклика (сек)")
     ax2.set_title("Время загрузки (только для доступных)")
     ax2.tick_params(axis="x", rotation=45)
-
     for bar, t in zip(bars, response_times):
         if t > 0:
             ax2.text(
@@ -181,9 +163,7 @@ def create_status_chart(results, domain):
                 f"{t:.2f}с",
                 ha="center", va="bottom", fontsize=9
             )
-
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=100)
     buf.seek(0)
@@ -191,7 +171,6 @@ def create_status_chart(results, domain):
     return buf
 
 def analyze_blocking(results):
-    """Анализ блокировки в России"""
     ru_result = None
     other_results = []
     for r in results:
@@ -199,13 +178,10 @@ def analyze_blocking(results):
             ru_result = r
         else:
             other_results.append(r)
-
     if not ru_result:
         return "❌ Не удалось получить данные по России"
-
     ru_available = "✅" in ru_result["status"]
     other_available = any("✅" in r["status"] for r in other_results)
-
     if not ru_available and other_available:
         working = [r["country"] for r in other_results if "✅" in r["status"]]
         country_names = {loc["country"]: loc["name"] for loc in LOCATIONS}
@@ -225,26 +201,20 @@ def analyze_blocking(results):
         return "✅ **ВСЁ ХОРОШО**\nСайт доступен во всех проверенных регионах"
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /check"""
     if not context.args:
         await update.message.reply_text(
             "Укажите домен. Например:\n/check example.com\n/check google.ru"
         )
         return
-
     domain = context.args[0].lower().strip()
     domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
-
     status_msg = await update.message.reply_text(
         f"🔍 Проверяю {domain}... Это займёт около 30 секунд"
     )
-
     try:
         results = await check_site_global(domain)
         analysis = analyze_blocking(results)
         chart_buf = create_status_chart(results, domain)
-
-        # Формируем отчёт
         country_names = {loc["country"]: loc["name"] for loc in LOCATIONS}
         text = f"📊 **Результаты проверки {domain}**\n\n"
         for r in results:
@@ -253,14 +223,12 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"{name}: {r['status']} ({time_str})\n"
         text += f"\n{analysis}"
         text += f"\n\n🕒 Проверка: {datetime.now().strftime('%H:%M:%S')}"
-
         await status_msg.delete()
         await update.message.reply_photo(
             photo=chart_buf,
             caption=text,
             parse_mode="Markdown"
         )
-
     except Exception as e:
         logger.exception("Ошибка")
         await status_msg.edit_text(f"❌ Ошибка при проверке: {str(e)}")
@@ -272,15 +240,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    # Запускаем Telegram бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check_command))
-
     logger.info("Бот запущен...")
     app.run_polling()
 
